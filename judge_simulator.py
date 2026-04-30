@@ -24,16 +24,16 @@ Author: magicpin AI Challenge Team
 BOT_URL = "https://magicpin-hshq.onrender.com"
 
 # Choose your LLM provider: "openai", "anthropic", "gemini", "deepseek", "groq", "ollama", "openrouter"
-LLM_PROVIDER = "openrouter"
+LLM_PROVIDER = "gemini"
 
 # Your API key (paste your key here)
 import os 
 from dotenv import load_dotenv
 load_dotenv()
-LLM_API_KEY = os.getenv("OPENROUTER_API_KEY")
+LLM_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # Model to use (leave empty for default, or specify like "gpt-4o", "claude-3-5-sonnet-20241022", etc.)
-LLM_MODEL = "google/gemma-3-12b-it:free"  # <-- Optional: specify model or leave empty for default
+LLM_MODEL = "gemini-2.0-flash"  # <-- Optional: specify model or leave empty for default
 
 # For Ollama only: local server URL
 OLLAMA_URL = "http://localhost:11434"
