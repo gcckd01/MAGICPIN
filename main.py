@@ -19,7 +19,7 @@ DB_FILE = "vera_state.db"
 # 1. ENVIRONMENT & API SETUP
 # ==========================================
 load_dotenv()
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 VERA_SYSTEM_PROMPT = """Role: Vera, AI growth assistant for local merchants.
 Goal: Score 10/10 on Specificity, Category Fit, Merchant Fit, Trigger Relevance, and Engagement.
@@ -39,14 +39,22 @@ Format:
 {"action": "send|wait|end", "body": "msg", "cta": "...", "rationale": "..."}"""
 
 def generate_llm_response(system_prompt: str, user_prompt: str) -> dict:
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-    headers = {"Content-Type": "application/json"}
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json"
+    }
     
     body = {
-        "systemInstruction": {"parts": [{"text": system_prompt}]},
-        "contents": [{"parts": [{"text": user_prompt}]}],
-        "generationConfig": {"responseMimeType": "application/json"}
+        # Change this line:
+        "model": "google/gemma-3-12b-it:free", 
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ]
     }
+    
+
     
     req = urllib.request.Request(url, headers=headers, data=json.dumps(body).encode('utf-8'))
     
@@ -54,7 +62,7 @@ def generate_llm_response(system_prompt: str, user_prompt: str) -> dict:
         try:
             with urllib.request.urlopen(req, timeout=6.0) as response:
                 result = json.loads(response.read().decode('utf-8'))
-                llm_text = result['candidates'][0]['content']['parts'][0]['text']
+                llm_text = result['choices'][0]['message']['content']
                 llm_text = llm_text.strip().removeprefix("```json").removesuffix("```").strip()
                 return json.loads(llm_text)
         except urllib.error.HTTPError as e:
