@@ -22,17 +22,21 @@ load_dotenv()
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 VERA_SYSTEM_PROMPT = """Role: Vera, AI growth assistant for local merchants.
+Goal: Score 10/10 on Specificity, Category Fit, Merchant Fit, Trigger Relevance, and Engagement.
 Constraints:
 1. `body` < 320 chars.
-2. NO URLs.
-3. USE ONLY provided facts/metrics. NO hallucination.
-4. No repetition.
-5. Return JSON ONLY, no markdown.
+2. NO URLs or links.
+3. USE ONLY provided facts/metrics (no hallucination).
+4. Return JSON ONLY, no markdown.
+
+Guidelines:
+- Specificity: Use EXACT numbers, %, and dates from context.
+- Category Fit: Match voice (e.g., clinical/technical for dentists, warm for salons). Address owners by name.
+- Trigger Relevance: Mention WHY you are messaging them NOW (based on trigger).
+- Engagement: Strong CTA, low friction.
 
 Format:
-{"action": "send|wait|end", "body": "msg", "cta": "...", "rationale": "..."}
-
-TIP: For 10/10 Category Fit, use category technical terms (e.g. 'caries', 'conversion') & address owner by first name."""
+{"action": "send|wait|end", "body": "msg", "cta": "...", "rationale": "..."}"""
 
 def generate_llm_response(system_prompt: str, user_prompt: str) -> dict:
     url = "https://openrouter.ai/api/v1/chat/completions"
@@ -54,22 +58,22 @@ def generate_llm_response(system_prompt: str, user_prompt: str) -> dict:
     
     req = urllib.request.Request(url, headers=headers, data=json.dumps(body).encode('utf-8'))
     
-    for attempt in range(3):
+    for attempt in range(2):
         try:
-            with urllib.request.urlopen(req, timeout=12.0) as response:
+            with urllib.request.urlopen(req, timeout=6.0) as response:
                 result = json.loads(response.read().decode('utf-8'))
                 llm_text = result['choices'][0]['message']['content']
                 llm_text = llm_text.strip().removeprefix("```json").removesuffix("```").strip()
                 return json.loads(llm_text)
         except urllib.error.HTTPError as e:
-            if e.code == 429 and attempt < 2:
-                time.sleep(1 + random.random() * 2)
+            if e.code == 429 and attempt < 1:
+                time.sleep(1 + random.random() * 0.5)
                 continue
             print(f"API HTTP Error {e.code}: {e.read().decode('utf-8')}")
             return {"error": "timeout_or_fail"}
         except Exception as e:
-            if attempt < 2:
-                time.sleep(1 + random.random() * 2)
+            if attempt < 1:
+                time.sleep(1 + random.random() * 0.5)
                 continue
             print(f"API choked or timed out: {e}")
             return {"error": "timeout_or_fail"}
@@ -220,7 +224,7 @@ Context: {merchant_context_str}"""
     try:
         llm_json_output = await asyncio.wait_for(
             asyncio.to_thread(generate_llm_response, VERA_SYSTEM_PROMPT, user_prompt),
-            timeout=14.0
+            timeout=13.5
         )
         
         # INTERCEPTOR: If OpenRouter failed, return safe fallback schema
@@ -246,7 +250,7 @@ Turn: {data.turn_number}"""
     try:
         llm_json_output = await asyncio.wait_for(
             asyncio.to_thread(generate_llm_response, VERA_SYSTEM_PROMPT, user_prompt),
-            timeout=14.0
+            timeout=13.5
         )
         
         # INTERCEPTOR: If OpenRouter failed, return safe fallback schema
