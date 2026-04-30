@@ -21,13 +21,13 @@ Author: magicpin AI Challenge Team
 # =============================================================================
 
 # Your bot's URL (where your bot is running)
-BOT_URL = "http://localhost:8080"
+BOT_URL = "https://magicpin-hshq.onrender.com"
 
 # Choose your LLM provider: "openai", "anthropic", "gemini", "deepseek", "groq", "ollama", "openrouter"
 LLM_PROVIDER = "openrouter"
 
 # Your API key (paste your key here)
-
+import os 
 from dotenv import load_dotenv
 load_dotenv()
 LLM_API_KEY = os.getenv("OPENROUTER_API_KEY")
@@ -39,7 +39,7 @@ LLM_MODEL = "openrouter/free"  # <-- Optional: specify model or leave empty for 
 OLLAMA_URL = "http://localhost:11434"
 
 # Which test to run: "warmup", "phase2_short", "auto_reply_hell", "intent_transition", "hostile", "all", "full_evaluation"
-TEST_SCENARIO = "phase2_short"
+TEST_SCENARIO = "full_evaluation"
 
 # =============================================================================
 # ██████  END OF CONFIGURATION - DON'T EDIT BELOW THIS LINE ██████
