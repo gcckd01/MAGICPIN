@@ -47,7 +47,7 @@ def generate_llm_response(system_prompt: str, user_prompt: str) -> dict:
     
     body = {
         # Change this line:
-        "model": "openrouter/free", 
+        "model": "google/gemma-3-12b-it:free", 
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
