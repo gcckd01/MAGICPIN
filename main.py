@@ -258,7 +258,7 @@ async def reply(data: ReplyPayload):
     try:
         llm_json_output = await asyncio.wait_for(
             asyncio.to_thread(generate_llm_response, VERA_SYSTEM_PROMPT, user_prompt),
-            timeout=6.0
+            timeout=7.5
         )
         
         # INTERCEPTOR: If OpenRouter failed, return safe fallback schema
