@@ -36,12 +36,12 @@ Guidelines:
 - Engagement: Strong CTA, low friction.
 
 Format:
-Return ONLY a valid JSON object matching this structure. You must generate REAL, high-quality content for the body, cta, and rationale based on the context.
+Return ONLY a valid JSON object matching this structure. Here is an example of a perfect response:
 {
   "action": "send",
-  "body": "<write your highly engaging promo message here>",
-  "cta": "<write your call to action here>",
-  "rationale": "<explain why this message scores 10/10>"
+  "body": "Hi John! We noticed your store traffic is up 20% today! Click here to claim your free reward.",
+  "cta": "Claim Reward",
+  "rationale": "I addressed the merchant by name and referenced the specific 20% traffic increase."
 }"""
 
 def generate_llm_response(system_prompt: str, user_prompt: str) -> dict:
