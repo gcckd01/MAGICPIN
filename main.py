@@ -1,22 +1,22 @@
-from fastapi import FastAPI, HTTPException, Request
-from pydantic import BaseModel
-from typing import Dict, List, Optional, Any
-import sqlite3
+import asyncio
 import json
-from datetime import datetime
+import sqlite3
+import os
 import urllib.request
 import urllib.error
-import concurrent.futures
-import os
+from datetime import datetime
+from typing import Dict, List, Optional, Any
+from fastapi import FastAPI, HTTPException, Request
+from pydantic import BaseModel
 from dotenv import load_dotenv
 
 app = FastAPI()
 DB_FILE = "vera_state.db"
 
 # ==========================================
-# 1. YOUR API KEY (PASTE YOUR OPENROUTER KEY HERE)
+# 1. ENVIRONMENT & API SETUP
 # ==========================================
-load_dotenv() # Loads the secret .env file
+load_dotenv()
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 VERA_SYSTEM_PROMPT = """You are Vera, an elite, data-driven AI growth assistant for local merchants. Your goal is to drive engagement by composing highly specific, relevant, and compelling nudges.
@@ -54,14 +54,13 @@ You are a precise marketing assistant. You MUST ONLY use the numbers and facts p
 """
 
 def generate_llm_response(system_prompt: str, user_prompt: str) -> dict:
-    url = "https://openrouter.ai/api/v1/chat/completions"
+    url = "[https://openrouter.ai/api/v1/chat/completions](https://openrouter.ai/api/v1/chat/completions)"
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json"
     }
     
     body = {
-        # Bypassing the generic router's rate limits
         "model": "meta-llama/llama-3-8b-instruct:free", 
         "messages": [
             {"role": "system", "content": system_prompt},
@@ -72,23 +71,22 @@ def generate_llm_response(system_prompt: str, user_prompt: str) -> dict:
     req = urllib.request.Request(url, headers=headers, data=json.dumps(body).encode('utf-8'))
     
     try:
-        # THE CIRCUIT BREAKER: Force a maximum wait of 8 seconds
         with urllib.request.urlopen(req, timeout=8.0) as response:
             result = json.loads(response.read().decode('utf-8'))
             llm_text = result['choices'][0]['message']['content']
-            
             llm_text = llm_text.strip().removeprefix("```json").removesuffix("```").strip()
             return json.loads(llm_text)
     except Exception as e:
         print(f"API choked or timed out: {e}")
-        # Return a custom error flag so our bot knows to deploy the fallback
         return {"error": "timeout_or_fail"}
+
 # ==========================================
 # 2. DATABASE INITIALIZATION
 # ==========================================
 def init_db():
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
+        # We only use context_store, keeping everything unified in one table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS context_store (
                 scope TEXT,
@@ -190,95 +188,96 @@ async def push_context(data: ContextPayload):
 
 @app.post("/v1/tick")
 async def tick(data: TickPayload):
-    # 1. Safely extract the merchant_id and trigger event from the list
-    if not hasattr(data, 'available_triggers') or not data.available_triggers:
+    if not data.available_triggers:
         return {"action": "wait", "body": "", "cta": "", "rationale": "No triggers available."}
         
-    current_trigger = data.available_triggers[0]
-    # Use getattr to safely pull the ID whether they named the key 'merchant' or 'merchant_id'
-    target_merchant_id = getattr(current_trigger, 'merchant_id', getattr(current_trigger, 'merchant', None))
-    trigger_event_details = str(current_trigger)
+    trigger_id = data.available_triggers[0]
+    trigger_context_str = "{}"
+    merchant_context_str = "No specific context available."
+    target_merchant_id = "unknown"
 
-    # 2. Fetch the real merchant data from your SQLite DB
-    merchant_context = "No specific context available."
+    # Fetch trigger and merchant data safely from the context_store
     try:
         with sqlite3.connect(DB_FILE) as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT details FROM merchants WHERE id = ?", (target_merchant_id,))
-            row = cursor.fetchone()
-            if row:
-                merchant_context = row[0]
+            
+            # Get Trigger Info
+            cursor.execute("SELECT payload FROM context_store WHERE scope='trigger' AND context_id=?", (trigger_id,))
+            trigger_row = cursor.fetchone()
+            if trigger_row:
+                trigger_context_str = trigger_row[0]
+                trigger_data = json.loads(trigger_context_str)
+                target_merchant_id = trigger_data.get("merchant_id", "unknown")
+            
+            # Get Merchant Info
+            if target_merchant_id != "unknown":
+                cursor.execute("SELECT payload FROM context_store WHERE scope='merchant' AND context_id=?", (target_merchant_id,))
+                merchant_row = cursor.fetchone()
+                if merchant_row:
+                    merchant_context_str = merchant_row[0]
     except Exception as e:
-        print(f"Database error: {e}")
+        print(f"Database lookup error: {e}")
 
-    # 3. Build a prompt that forces the LLM to use the REAL data
     user_prompt = f"""
     Generate a highly specific promotional message for this merchant.
     Merchant ID: {target_merchant_id}
-    Trigger Event: {trigger_event_details}
+    Trigger Event Details: {trigger_context_str}
     
     MERCHANT REALITY (USE THESE FACTS ONLY):
-    {merchant_context}
+    {merchant_context_str}
     
     Return a JSON object with 'action' (send/wait), 'body' (the message), 'cta', and 'rationale'.
     """
 
     try:
-        # 4. Call the LLM with the same async protection so it doesn't fail under load
         llm_json_output = await asyncio.wait_for(
             asyncio.to_thread(generate_llm_response, VERA_SYSTEM_PROMPT, user_prompt),
             timeout=6.0
         )
+        
+        # INTERCEPTOR: If OpenRouter failed, return safe fallback schema
+        if "error" in llm_json_output:
+            return {"action": "wait", "body": "", "cta": "", "rationale": "Fallback triggered due to upstream LLM issue."}
+            
         print(json.dumps(llm_json_output, indent=2))
         return llm_json_output
 
     except asyncio.TimeoutError:
-        return {
-            "action": "wait",
-            "body": "",
-            "cta": "",
-            "rationale": "Timeout generating tick response. Waiting for next cycle."
-        }
+        return {"action": "wait", "body": "", "cta": "", "rationale": "Timeout generating tick response."}
     except Exception as e:
-        return {
-            "action": "wait",
-            "body": "",
-            "cta": "",
-            "rationale": f"System error: {str(e)}"
-        }
+        return {"action": "wait", "body": "", "cta": "", "rationale": f"System error: {str(e)}"}
 
-import asyncio
-import json
-from fastapi import Request
 
 @app.post("/v1/reply")
 async def reply(data: ReplyPayload):
     user_prompt = f"The merchant '{data.merchant_id}' just replied to your previous message.\nConversation ID: {data.conversation_id}\nMerchant's Message: '{data.message}'\nTurn Number: {data.turn_number}\nDecide what to do next. Return a single JSON action object with keys: 'action' (send/wait/end), 'body' (if sending), 'cta', and 'rationale'."
     
     try:
-        # 1. Run the blocking LLM call in a background thread to prevent server lockup
-        # 2. Enforce a strict 6.0-second timeout to beat the judge's 8.0-second limit
         llm_json_output = await asyncio.wait_for(
             asyncio.to_thread(generate_llm_response, VERA_SYSTEM_PROMPT, user_prompt),
             timeout=6.0
         )
         
+        # INTERCEPTOR: If OpenRouter failed, return safe fallback schema
+        if "error" in llm_json_output:
+            return {
+                "action": "end",
+                "body": "Got it. I have noted your response and our team will review the details shortly.",
+                "cta": "",
+                "rationale": "Fallback triggered due to upstream LLM issue."
+            }
+            
         print(json.dumps(llm_json_output, indent=2))
         return llm_json_output
         
     except asyncio.TimeoutError:
-        # Circuit Breaker: OpenRouter took too long. Return a valid schema instantly.
-        print("LLM timeout! Triggering safe fallback.")
         return {
             "action": "end",
             "body": "Got it. I have noted your response and our team will review the details shortly.",
             "cta": "",
             "rationale": "Fallback triggered due to upstream LLM timeout."
         }
-        
     except Exception as e:
-        # Handles 502 Bad Gateway or JSON parsing errors
-        print(f"Error encountered: {str(e)}")
         return {
             "action": "end",
             "body": "Understood. Let me pause here and ensure your request is routed correctly.",
