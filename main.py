@@ -4,6 +4,8 @@ import sqlite3
 import os
 import urllib.request
 import urllib.error
+import time
+import random
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 from fastapi import FastAPI, HTTPException, Request
@@ -52,15 +54,25 @@ def generate_llm_response(system_prompt: str, user_prompt: str) -> dict:
     
     req = urllib.request.Request(url, headers=headers, data=json.dumps(body).encode('utf-8'))
     
-    try:
-        with urllib.request.urlopen(req, timeout=8.0) as response:
-            result = json.loads(response.read().decode('utf-8'))
-            llm_text = result['choices'][0]['message']['content']
-            llm_text = llm_text.strip().removeprefix("```json").removesuffix("```").strip()
-            return json.loads(llm_text)
-    except Exception as e:
-        print(f"API choked or timed out: {e}")
-        return {"error": "timeout_or_fail"}
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=12.0) as response:
+                result = json.loads(response.read().decode('utf-8'))
+                llm_text = result['choices'][0]['message']['content']
+                llm_text = llm_text.strip().removeprefix("```json").removesuffix("```").strip()
+                return json.loads(llm_text)
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt < 2:
+                time.sleep(1 + random.random() * 2)
+                continue
+            print(f"API HTTP Error {e.code}: {e.read().decode('utf-8')}")
+            return {"error": "timeout_or_fail"}
+        except Exception as e:
+            if attempt < 2:
+                time.sleep(1 + random.random() * 2)
+                continue
+            print(f"API choked or timed out: {e}")
+            return {"error": "timeout_or_fail"}
 
 # ==========================================
 # 2. DATABASE INITIALIZATION
@@ -171,7 +183,7 @@ async def push_context(data: ContextPayload):
 @app.post("/v1/tick")
 async def tick(data: TickPayload):
     if not data.available_triggers:
-        return {"action": "wait", "body": "", "cta": "", "rationale": "No triggers available."}
+        return {"actions": [{"action": "wait", "body": "", "cta": "", "rationale": "No triggers available."}]}
         
     trigger_id = data.available_triggers[0]
     trigger_context_str = "{}"
@@ -208,20 +220,20 @@ Context: {merchant_context_str}"""
     try:
         llm_json_output = await asyncio.wait_for(
             asyncio.to_thread(generate_llm_response, VERA_SYSTEM_PROMPT, user_prompt),
-            timeout=6.0
+            timeout=14.0
         )
         
         # INTERCEPTOR: If OpenRouter failed, return safe fallback schema
         if "error" in llm_json_output:
-            return {"action": "wait", "body": "", "cta": "", "rationale": "Fallback triggered due to upstream LLM issue."}
+            return {"actions": [{"action": "wait", "body": "", "cta": "", "rationale": "Fallback triggered due to upstream LLM issue."}]}
             
         print(json.dumps(llm_json_output, indent=2))
-        return llm_json_output
+        return {"actions": [llm_json_output]}
 
     except asyncio.TimeoutError:
-        return {"action": "wait", "body": "", "cta": "", "rationale": "Timeout generating tick response."}
+        return {"actions": [{"action": "wait", "body": "", "cta": "", "rationale": "Timeout generating tick response."}]}
     except Exception as e:
-        return {"action": "wait", "body": "", "cta": "", "rationale": f"System error: {str(e)}"}
+        return {"actions": [{"action": "wait", "body": "", "cta": "", "rationale": f"System error: {str(e)}"}]}
 
 
 @app.post("/v1/reply")
@@ -234,7 +246,7 @@ Turn: {data.turn_number}"""
     try:
         llm_json_output = await asyncio.wait_for(
             asyncio.to_thread(generate_llm_response, VERA_SYSTEM_PROMPT, user_prompt),
-            timeout=7.5
+            timeout=14.0
         )
         
         # INTERCEPTOR: If OpenRouter failed, return safe fallback schema
