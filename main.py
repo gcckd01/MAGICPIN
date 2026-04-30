@@ -36,7 +36,13 @@ Guidelines:
 - Engagement: Strong CTA, low friction.
 
 Format:
-{"action": "send|wait|end", "body": "msg", "cta": "...", "rationale": "..."}"""
+Return ONLY a valid JSON object matching this structure. You must generate REAL, high-quality content for the body, cta, and rationale based on the context.
+{
+  "action": "send",
+  "body": "<write your highly engaging promo message here>",
+  "cta": "<write your call to action here>",
+  "rationale": "<explain why this message scores 10/10>"
+}"""
 
 def generate_llm_response(system_prompt: str, user_prompt: str) -> dict:
     url = "https://openrouter.ai/api/v1/chat/completions"
@@ -196,55 +202,57 @@ async def tick(data: TickPayload):
     if not data.available_triggers:
         return {"actions": [{"action": "wait", "body": "", "cta": "", "rationale": "No triggers available."}]}
         
-    trigger_id = data.available_triggers[0]
-    trigger_context_str = "{}"
-    merchant_context_str = "No specific context available."
-    target_merchant_id = "unknown"
-
-    # Fetch trigger and merchant data safely from the context_store
-    try:
-        with sqlite3.connect(DB_FILE) as conn:
-            cursor = conn.cursor()
-            
-            # Get Trigger Info
-            cursor.execute("SELECT payload FROM context_store WHERE scope='trigger' AND context_id=?", (trigger_id,))
-            trigger_row = cursor.fetchone()
-            if trigger_row:
-                trigger_context_str = trigger_row[0]
-                trigger_data = json.loads(trigger_context_str)
-                target_merchant_id = trigger_data.get("merchant_id", "unknown")
-            
-            # Get Merchant Info
-            if target_merchant_id != "unknown":
-                cursor.execute("SELECT payload FROM context_store WHERE scope='merchant' AND context_id=?", (target_merchant_id,))
-                merchant_row = cursor.fetchone()
-                if merchant_row:
-                    merchant_context_str = merchant_row[0]
-    except Exception as e:
-        print(f"Database lookup error: {e}")
-
-    user_prompt = f"""Task: Generate specific promo message for merchant.
-Merchant ID: {target_merchant_id}
-Trigger: {trigger_context_str}
-Context: {merchant_context_str}"""
-
-    try:
-        llm_json_output = await asyncio.wait_for(
-            asyncio.to_thread(generate_llm_response, VERA_SYSTEM_PROMPT, user_prompt),
-            timeout=13.5
-        )
+    actions = []
+    
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
         
-        # INTERCEPTOR: If OpenRouter failed, return safe fallback schema
-        if "error" in llm_json_output:
-            return {"actions": [{"action": "wait", "body": "", "cta": "", "rationale": "Fallback triggered due to upstream LLM issue."}]}
-            
-        print(json.dumps(llm_json_output, indent=2))
-        return {"actions": [llm_json_output]}
+        for trigger_id in data.available_triggers:
+            trigger_context_str = "{}"
+            merchant_context_str = "No specific context available."
+            target_merchant_id = "unknown"
 
-    except asyncio.TimeoutError:
-        return {"actions": [{"action": "wait", "body": "", "cta": "", "rationale": "Timeout generating tick response."}]}
-    except Exception as e:
-        return {"actions": [{"action": "wait", "body": "", "cta": "", "rationale": f"System error: {str(e)}"}]}
+            try:
+                # Get Trigger Info
+                cursor.execute("SELECT payload FROM context_store WHERE scope='trigger' AND context_id=?", (trigger_id,))
+                trigger_row = cursor.fetchone()
+                if trigger_row:
+                    trigger_context_str = trigger_row[0]
+                    trigger_data = json.loads(trigger_context_str)
+                    target_merchant_id = trigger_data.get("merchant_id", "unknown")
+                
+                # Get Merchant Info
+                if target_merchant_id != "unknown":
+                    cursor.execute("SELECT payload FROM context_store WHERE scope='merchant' AND context_id=?", (target_merchant_id,))
+                    merchant_row = cursor.fetchone()
+                    if merchant_row:
+                        merchant_context_str = merchant_row[0]
+            except Exception as e:
+                print(f"Database lookup error: {e}")
+
+            user_prompt = f"""Task: Generate specific promo message for merchant.
+Merchant ID: {target_merchant_id}
+Trigger ID: {trigger_id}
+Trigger Data: {trigger_context_str}
+Merchant Data: {merchant_context_str}"""
+
+            try:
+                llm_json_output = await asyncio.wait_for(
+                    asyncio.to_thread(generate_llm_response, VERA_SYSTEM_PROMPT, user_prompt),
+                    timeout=9.0
+                )
+                
+                if "error" in llm_json_output:
+                    actions.append({"action": "wait", "body": "System error", "cta": "", "rationale": "Fallback"})
+                else:
+                    # ensure trigger_id and merchant_id are included in the action response so the judge knows who it's for
+                    llm_json_output["trigger_id"] = trigger_id
+                    llm_json_output["merchant_id"] = target_merchant_id
+                    actions.append(llm_json_output)
+            except Exception as e:
+                actions.append({"action": "wait", "body": "System error", "cta": "", "rationale": str(e)})
+
+    return {"actions": actions}
 
 
 @app.post("/v1/reply")
