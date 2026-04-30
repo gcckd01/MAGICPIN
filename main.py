@@ -19,39 +19,18 @@ DB_FILE = "vera_state.db"
 load_dotenv()
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
-VERA_SYSTEM_PROMPT = """You are Vera, an elite, data-driven AI growth assistant for local merchants. Your goal is to drive engagement by composing highly specific, relevant, and compelling nudges.
+VERA_SYSTEM_PROMPT = """Role: Vera, AI growth assistant for local merchants.
+Constraints:
+1. `body` < 320 chars.
+2. NO URLs.
+3. USE ONLY provided facts/metrics. NO hallucination.
+4. No repetition.
+5. Return JSON ONLY, no markdown.
 
-### HARD CONSTRAINTS (Violating these results in immediate failure):
-1. **LENGTH:** Your `body` text MUST NOT exceed 320 characters. Count carefully.
-2. **NO URLs:** You MUST NOT include any links, URLs, or web addresses.
-3. **NO FABRICATION:** You must only use numbers, prices, and facts explicitly provided in the context. Do not invent metrics.
-4. **NO REPETITION:** Do not repeat messages in the same conversation thread.
+Format:
+{"action": "send|wait|end", "body": "msg", "cta": "...", "rationale": "..."}
 
-### OUTPUT FORMAT:
-You must return valid JSON ONLY. Do not include markdown formatting like ```json.
-You MUST wrap your response in an "actions" array. 
-
-Example Output Structure:
-{
-  "actions": [
-    {
-      "conversation_id": "conv_123",
-      "merchant_id": "m_001_drmeera",
-      "customer_id": null,
-      "send_as": "vera",
-      "trigger_id": "trg_001",
-      "template_name": "vera_nudge_v1",
-      "template_params": ["string"],
-      "body": "String strictly under 320 chars containing specific facts and a binary CTA.",
-      "cta": "binary_yes_no",
-      "suppression_key": "string",
-      "rationale": "Explain how this message meets the scoring dimensions."
-    }
-  ]
-}
-EXPERT TIP: To score 10/10 on Category Fit, you MUST use technical terms from the category context (e.g., 'caries', 'IOPA', 'conversion') and address the owner by their first name.
-You are a precise marketing assistant. You MUST ONLY use the numbers and facts provided in the prompt context. NEVER invent, hallucinate, or guess metrics. If no metrics are provided, do not mention any
-"""
+TIP: For 10/10 Category Fit, use category technical terms (e.g. 'caries', 'conversion') & address owner by first name."""
 
 def generate_llm_response(system_prompt: str, user_prompt: str) -> dict:
     url = "https://openrouter.ai/api/v1/chat/completions"
@@ -221,16 +200,10 @@ async def tick(data: TickPayload):
     except Exception as e:
         print(f"Database lookup error: {e}")
 
-    user_prompt = f"""
-    Generate a highly specific promotional message for this merchant.
-    Merchant ID: {target_merchant_id}
-    Trigger Event Details: {trigger_context_str}
-    
-    MERCHANT REALITY (USE THESE FACTS ONLY):
-    {merchant_context_str}
-    
-    Return a JSON object with 'action' (send/wait), 'body' (the message), 'cta', and 'rationale'.
-    """
+    user_prompt = f"""Task: Generate specific promo message for merchant.
+Merchant ID: {target_merchant_id}
+Trigger: {trigger_context_str}
+Context: {merchant_context_str}"""
 
     try:
         llm_json_output = await asyncio.wait_for(
@@ -253,7 +226,10 @@ async def tick(data: TickPayload):
 
 @app.post("/v1/reply")
 async def reply(data: ReplyPayload):
-    user_prompt = f"The merchant '{data.merchant_id}' just replied to your previous message.\nConversation ID: {data.conversation_id}\nMerchant's Message: '{data.message}'\nTurn Number: {data.turn_number}\nDecide what to do next. Return a single JSON action object with keys: 'action' (send/wait/end), 'body' (if sending), 'cta', and 'rationale'."
+    user_prompt = f"""Task: Decide next action.
+Merchant '{data.merchant_id}' replied: '{data.message}'
+Conv ID: {data.conversation_id}
+Turn: {data.turn_number}"""
     
     try:
         llm_json_output = await asyncio.wait_for(
