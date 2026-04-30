@@ -178,7 +178,7 @@ async def push_context(data: ContextPayload):
         )
         row = cursor.fetchone()
         
-        if row and row[0] >= version:
+        if row and row[0] > version:
             raise HTTPException(status_code=409, detail={"accepted": False, "reason": "stale_version", "current_version": row[0]})
 
         cursor.execute("""
