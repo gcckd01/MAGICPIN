@@ -49,8 +49,7 @@ def generate_llm_response(system_prompt: str, user_prompt: str) -> dict:
         # Change this line:
         "model": "google/gemma-3-12b-it:free", 
         "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
+            {"role": "user", "content": f"{system_prompt}\n\n{user_prompt}"}
         ]
     }
     
