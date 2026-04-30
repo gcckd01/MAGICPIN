@@ -197,62 +197,58 @@ async def push_context(data: ContextPayload):
         "stored_at": datetime.utcnow().isoformat() + "Z"
     }
 
-@app.post("/v1/tick")
-async def tick(data: TickPayload):
-    if not data.available_triggers:
-        return {"actions": [{"action": "wait", "body": "", "cta": "", "rationale": "No triggers available."}]}
-        
-    actions = []
-    
-    with sqlite3.connect(DB_FILE) as conn:
-        cursor = conn.cursor()
-        
-        for trigger_id in data.available_triggers:
-            trigger_context_str = "{}"
-            merchant_context_str = "No specific context available."
-            target_merchant_id = "unknown"
+async def process_single_trigger(trigger_id: str) -> dict:
+    trigger_context_str = "{}"
+    merchant_context_str = "No specific context available."
+    target_merchant_id = "unknown"
 
-            try:
-                # Get Trigger Info
-                cursor.execute("SELECT payload FROM context_store WHERE scope='trigger' AND context_id=?", (trigger_id,))
-                trigger_row = cursor.fetchone()
-                if trigger_row:
-                    trigger_context_str = trigger_row[0]
-                    trigger_data = json.loads(trigger_context_str)
-                    target_merchant_id = trigger_data.get("merchant_id", "unknown")
-                
-                # Get Merchant Info
-                if target_merchant_id != "unknown":
-                    cursor.execute("SELECT payload FROM context_store WHERE scope='merchant' AND context_id=?", (target_merchant_id,))
-                    merchant_row = cursor.fetchone()
-                    if merchant_row:
-                        merchant_context_str = merchant_row[0]
-            except Exception as e:
-                print(f"Database lookup error: {e}")
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            # Get Trigger Info
+            cursor.execute("SELECT payload FROM context_store WHERE scope='trigger' AND context_id=?", (trigger_id,))
+            trigger_row = cursor.fetchone()
+            if trigger_row:
+                trigger_context_str = trigger_row[0]
+                trigger_data = json.loads(trigger_context_str)
+                target_merchant_id = trigger_data.get("merchant_id", "unknown")
+            
+            # Get Merchant Info
+            if target_merchant_id != "unknown":
+                cursor.execute("SELECT payload FROM context_store WHERE scope='merchant' AND context_id=?", (target_merchant_id,))
+                merchant_row = cursor.fetchone()
+                if merchant_row:
+                    merchant_context_str = merchant_row[0]
+    except Exception as e:
+        print(f"Database lookup error: {e}")
 
-            user_prompt = f"""Task: Generate specific promo message for merchant.
+    user_prompt = f"""Task: Generate specific promo message for merchant.
 Merchant ID: {target_merchant_id}
 Trigger ID: {trigger_id}
 Trigger Data: {trigger_context_str}
 Merchant Data: {merchant_context_str}"""
 
-            try:
-                llm_json_output = await asyncio.wait_for(
-                    asyncio.to_thread(generate_llm_response, VERA_SYSTEM_PROMPT, user_prompt),
-                    timeout=9.0
-                )
-                
-                if "error" in llm_json_output:
-                    actions.append({"action": "wait", "body": "System error", "cta": "", "rationale": "Fallback"})
-                else:
-                    # ensure trigger_id and merchant_id are included in the action response so the judge knows who it's for
-                    llm_json_output["trigger_id"] = trigger_id
-                    llm_json_output["merchant_id"] = target_merchant_id
-                    actions.append(llm_json_output)
-            except Exception as e:
-                actions.append({"action": "wait", "body": "System error", "cta": "", "rationale": str(e)})
+    try:
+        llm_json_output = await asyncio.wait_for(
+            asyncio.to_thread(generate_llm_response, VERA_SYSTEM_PROMPT, user_prompt),
+            timeout=10.0
+        )
+        if "error" in llm_json_output:
+            return {"action": "wait", "body": "System error", "cta": "", "rationale": "Fallback", "trigger_id": trigger_id, "merchant_id": target_merchant_id}
+        llm_json_output["trigger_id"] = trigger_id
+        llm_json_output["merchant_id"] = target_merchant_id
+        return llm_json_output
+    except Exception as e:
+        return {"action": "wait", "body": "System error", "cta": "", "rationale": str(e), "trigger_id": trigger_id, "merchant_id": target_merchant_id}
 
-    return {"actions": actions}
+@app.post("/v1/tick")
+async def tick(data: TickPayload):
+    if not data.available_triggers:
+        return {"actions": [{"action": "wait", "body": "", "cta": "", "rationale": "No triggers available."}]}
+        
+    tasks = [process_single_trigger(tid) for tid in data.available_triggers]
+    actions = await asyncio.gather(*tasks)
+    return {"actions": list(actions)}
 
 
 @app.post("/v1/reply")
