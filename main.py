@@ -190,24 +190,32 @@ async def push_context(data: ContextPayload):
 
 @app.post("/v1/tick")
 async def tick(data: TickPayload):
-    # 1. Fetch the real merchant data from your SQLite DB
+    # 1. Safely extract the merchant_id and trigger event from the list
+    if not hasattr(data, 'available_triggers') or not data.available_triggers:
+        return {"action": "wait", "body": "", "cta": "", "rationale": "No triggers available."}
+        
+    current_trigger = data.available_triggers[0]
+    # Use getattr to safely pull the ID whether they named the key 'merchant' or 'merchant_id'
+    target_merchant_id = getattr(current_trigger, 'merchant_id', getattr(current_trigger, 'merchant', None))
+    trigger_event_details = str(current_trigger)
+
+    # 2. Fetch the real merchant data from your SQLite DB
     merchant_context = "No specific context available."
     try:
         with sqlite3.connect(DB_FILE) as conn:
             cursor = conn.cursor()
-            # Assuming your payload has merchant_id. Adjust if the key is different.
-            cursor.execute("SELECT details FROM merchants WHERE id = ?", (data.merchant_id,))
+            cursor.execute("SELECT details FROM merchants WHERE id = ?", (target_merchant_id,))
             row = cursor.fetchone()
             if row:
                 merchant_context = row[0]
     except Exception as e:
         print(f"Database error: {e}")
 
-    # 2. Build a prompt that forces the LLM to use the REAL data
+    # 3. Build a prompt that forces the LLM to use the REAL data
     user_prompt = f"""
     Generate a highly specific promotional message for this merchant.
-    Merchant ID: {data.merchant_id}
-    Trigger Event: {data.trigger}
+    Merchant ID: {target_merchant_id}
+    Trigger Event: {trigger_event_details}
     
     MERCHANT REALITY (USE THESE FACTS ONLY):
     {merchant_context}
@@ -216,7 +224,7 @@ async def tick(data: TickPayload):
     """
 
     try:
-        # 3. Call the LLM with the same async protection so it doesn't fail under load
+        # 4. Call the LLM with the same async protection so it doesn't fail under load
         llm_json_output = await asyncio.wait_for(
             asyncio.to_thread(generate_llm_response, VERA_SYSTEM_PROMPT, user_prompt),
             timeout=6.0
