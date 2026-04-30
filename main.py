@@ -54,7 +54,7 @@ You are a precise marketing assistant. You MUST ONLY use the numbers and facts p
 """
 
 def generate_llm_response(system_prompt: str, user_prompt: str) -> dict:
-    url = "[https://openrouter.ai/api/v1/chat/completions](https://openrouter.ai/api/v1/chat/completions)"
+    url = "https://magicpin-hshq.onrender.com"
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json"
