@@ -33,7 +33,7 @@ load_dotenv()
 LLM_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 # Model to use (leave empty for default, or specify like "gpt-4o", "claude-3-5-sonnet-20241022", etc.)
-LLM_MODEL = "google/gemma-2-9b-it:free"  # <-- Optional: specify model or leave empty for default
+LLM_MODEL = "openai/gpt-oss-20b:free"  # <-- Optional: specify model or leave empty for default
 
 # For Ollama only: local server URL
 OLLAMA_URL = "http://localhost:11434"

@@ -101,12 +101,15 @@ init_db()
 # ==========================================
 # 3. PYDANTIC MODELS
 # ==========================================
-class ContextPayload(BaseModel):
-    scope: str
-    context_id: str
+class PayloadContent(BaseModel):
+    type: str
+    id: str
     version: int
+    data: Dict[str, Any]
+
+class ContextPayload(BaseModel):
+    payload: PayloadContent
     delivered_at: str
-    payload: Dict[str, Any]
 
 class TickPayload(BaseModel):
     now: str
@@ -155,16 +158,21 @@ async def metadata():
 
 @app.post("/v1/context")
 async def push_context(data: ContextPayload):
+    scope = data.payload.type
+    context_id = data.payload.id
+    version = data.payload.version
+    payload_data = data.payload.data
+
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
         
         cursor.execute(
             "SELECT version FROM context_store WHERE scope=? AND context_id=?", 
-            (data.scope, data.context_id)
+            (scope, context_id)
         )
         row = cursor.fetchone()
         
-        if row and row[0] >= data.version:
+        if row and row[0] >= version:
             raise HTTPException(status_code=409, detail={"accepted": False, "reason": "stale_version", "current_version": row[0]})
 
         cursor.execute("""
@@ -174,12 +182,12 @@ async def push_context(data: ContextPayload):
                 version=excluded.version,
                 payload=excluded.payload,
                 stored_at=excluded.stored_at
-        """, (data.scope, data.context_id, data.version, json.dumps(data.payload), datetime.utcnow().isoformat() + "Z"))
+        """, (scope, context_id, version, json.dumps(payload_data), datetime.utcnow().isoformat() + "Z"))
         conn.commit()
 
     return {
         "accepted": True, 
-        "ack_id": f"ack_{data.context_id}_v{data.version}", 
+        "ack_id": f"ack_{context_id}_v{version}", 
         "stored_at": datetime.utcnow().isoformat() + "Z"
     }
 
