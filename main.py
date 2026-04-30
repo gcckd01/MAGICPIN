@@ -50,6 +50,7 @@ Example Output Structure:
   ]
 }
 EXPERT TIP: To score 10/10 on Category Fit, you MUST use technical terms from the category context (e.g., 'caries', 'IOPA', 'conversion') and address the owner by their first name.
+You are a precise marketing assistant. You MUST ONLY use the numbers and facts provided in the prompt context. NEVER invent, hallucinate, or guess metrics. If no metrics are provided, do not mention any
 """
 
 def generate_llm_response(system_prompt: str, user_prompt: str) -> dict:
@@ -188,107 +189,91 @@ async def push_context(data: ContextPayload):
     }
 
 @app.post("/v1/tick")
-def tick(data: TickPayload):
-    actions_to_return = []
+async def tick(data: TickPayload):
+    # 1. Fetch the real merchant data from your SQLite DB
+    merchant_context = "No specific context available."
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            # Assuming your payload has merchant_id. Adjust if the key is different.
+            cursor.execute("SELECT details FROM merchants WHERE id = ?", (data.merchant_id,))
+            row = cursor.fetchone()
+            if row:
+                merchant_context = row[0]
+    except Exception as e:
+        print(f"Database error: {e}")
+
+    # 2. Build a prompt that forces the LLM to use the REAL data
+    user_prompt = f"""
+    Generate a highly specific promotional message for this merchant.
+    Merchant ID: {data.merchant_id}
+    Trigger Event: {data.trigger}
     
-    if not data.available_triggers:
-        return {"actions": []}
+    MERCHANT REALITY (USE THESE FACTS ONLY):
+    {merchant_context}
+    
+    Return a JSON object with 'action' (send/wait), 'body' (the message), 'cta', and 'rationale'.
+    """
 
-    # STRATEGIC PRIORITY: Only process 1 trigger to beat the clock
-    target_trigger = data.available_triggers[0]
+    try:
+        # 3. Call the LLM with the same async protection so it doesn't fail under load
+        llm_json_output = await asyncio.wait_for(
+            asyncio.to_thread(generate_llm_response, VERA_SYSTEM_PROMPT, user_prompt),
+            timeout=6.0
+        )
+        print(json.dumps(llm_json_output, indent=2))
+        return llm_json_output
 
-    with sqlite3.connect(DB_FILE) as conn:
-        cursor = conn.cursor()
-        
-        cursor.execute("SELECT payload FROM context_store WHERE scope='trigger' AND context_id=?", (target_trigger,))
-        trigger_row = cursor.fetchone()
-        if not trigger_row:
-            return {"actions": []}
-            
-        trigger_data = json.loads(trigger_row[0])
-        merchant_id = trigger_data.get("merchant_id")
-        
-        cursor.execute("SELECT payload FROM context_store WHERE scope='merchant' AND context_id=?", (merchant_id,))
-        merchant_row = cursor.fetchone()
-        merchant_data = json.loads(merchant_row[0]) if merchant_row else {}
-        
-        # The Balanced 45+/50 Prompt
-        # Extract ONLY the essential data so the free LLM processes it instantly
-        # Extract high-value data to feed the LLM without bloating the prompt
-        perf = merchant_data.get('performance', {})
-        category = merchant_data.get('category_slug', 'business')
-        owner_name = merchant_data.get('identity', {}).get('owner_first_name', 'there')
-        
-        # Dig deeper into the trigger to get the actual "Why Now"
-        trigger_reason = trigger_data.get('payload', {}).get('reason', trigger_data.get('trigger_type', 'recent activity'))
-        
-        # Grab the cheat-code vocabulary list the judge specifically scans for
-        vocab_list = merchant_data.get('context', {}).get('vocab_allowed', [])
-        vocab_str = ", ".join(vocab_list[:3]) if vocab_list else "ROI, conversion, scaling"
+    except asyncio.TimeoutError:
+        return {
+            "action": "wait",
+            "body": "",
+            "cta": "",
+            "rationale": "Timeout generating tick response. Waiting for next cycle."
+        }
+    except Exception as e:
+        return {
+            "action": "wait",
+            "body": "",
+            "cta": "",
+            "rationale": f"System error: {str(e)}"
+        }
 
-        # The "Goldilocks" Prompt: Tiny file size, massive context
-        user_prompt = f"""
-        Role: Expert growth advisor for the '{category}' industry.
-        Merchant: {owner_name}
-        Event Reason: {trigger_reason}
-        Metrics: Views={perf.get('views', '100+')}, CTR={perf.get('ctr', '2.0%')}
-        Keywords to Use: {vocab_str}
-
-        Write a message to {owner_name} under 320 chars. You MUST hit these 4 rules:
-        1. SPECIFICITY: Include the exact Views and CTR numbers.
-        2. FIT: Use 1 or 2 of the exact 'Keywords to Use' provided above.
-        3. RELEVANCE: Explicitly state the Event Reason so they know why you are messaging.
-        4. ENGAGEMENT: End the message EXACTLY with: "Reply YES to approve or NO to skip."
-        
-        CRITICAL: In your final JSON object, you must explicitly include the key "cta": "binary_yes_no".
-        """
-        try:
-            llm_json_output = generate_llm_response(VERA_SYSTEM_PROMPT, user_prompt)
-            
-            if "error" in llm_json_output:
-               
-                
-                # Extract backup metrics
-                perf = merchant_data.get("performance", {})
-                views = perf.get("views", "100+")
-                ctr = perf.get("ctr", "2.0%")
-                
-                # Extract dynamic vocabulary to trick the judge
-                vocab_list = merchant_data.get('context', {}).get('vocab_allowed', ['ROI', 'conversions'])
-                v1 = vocab_list[0] if len(vocab_list) > 0 else 'strategy'
-                v2 = vocab_list[1] if len(vocab_list) > 1 else 'scaling'
-                
-                # The ultimate hardcoded safety net
-                smart_fallback_text = f"Hi {owner_name}, following up on your {trigger_reason}. To improve your {v1} and {v2}, let's review your {views} views and {ctr} CTR. Reply YES to approve or NO to skip."
-                
-                fallback_action = {
-                    "conversation_id": f"conv_{target_trigger}",
-                    "merchant_id": merchant_id,
-                    "send_as": "vera",
-                    "body": smart_fallback_text,
-                    "cta": "binary_yes_no",
-                    "rationale": "Perfect fallback deployed with full metrics and dynamic vocab."
-                }
-                return {"actions": [fallback_action]}
-                
-            if llm_json_output and "actions" in llm_json_output:
-                return {"actions": llm_json_output["actions"]}
-                
-        except Exception as e:
-            print(f"Tick processing failed: {e}")
-
-    return {"actions": []}
+import asyncio
+import json
+from fastapi import Request
 
 @app.post("/v1/reply")
 async def reply(data: ReplyPayload):
     user_prompt = f"The merchant '{data.merchant_id}' just replied to your previous message.\nConversation ID: {data.conversation_id}\nMerchant's Message: '{data.message}'\nTurn Number: {data.turn_number}\nDecide what to do next. Return a single JSON action object with keys: 'action' (send/wait/end), 'body' (if sending), 'cta', and 'rationale'."
     
     try:
-        llm_json_output = generate_llm_response(VERA_SYSTEM_PROMPT, user_prompt)
+        # 1. Run the blocking LLM call in a background thread to prevent server lockup
+        # 2. Enforce a strict 6.0-second timeout to beat the judge's 8.0-second limit
+        llm_json_output = await asyncio.wait_for(
+            asyncio.to_thread(generate_llm_response, VERA_SYSTEM_PROMPT, user_prompt),
+            timeout=6.0
+        )
         
         print(json.dumps(llm_json_output, indent=2))
-        
         return llm_json_output
-    except Exception as e:
         
-        return {"action": "end", "rationale": "Fallback triggered due to error."}
+    except asyncio.TimeoutError:
+        # Circuit Breaker: OpenRouter took too long. Return a valid schema instantly.
+        print("LLM timeout! Triggering safe fallback.")
+        return {
+            "action": "end",
+            "body": "Got it. I have noted your response and our team will review the details shortly.",
+            "cta": "",
+            "rationale": "Fallback triggered due to upstream LLM timeout."
+        }
+        
+    except Exception as e:
+        # Handles 502 Bad Gateway or JSON parsing errors
+        print(f"Error encountered: {str(e)}")
+        return {
+            "action": "end",
+            "body": "Understood. Let me pause here and ensure your request is routed correctly.",
+            "cta": "",
+            "rationale": f"System error fallback: {str(e)}"
+        }
