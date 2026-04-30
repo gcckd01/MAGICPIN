@@ -47,7 +47,7 @@ def generate_llm_response(system_prompt: str, user_prompt: str) -> dict:
     
     body = {
         # Change this line:
-        "model": "google/gemma-3-12b-it:free", 
+        "model": "openai/gpt-oss-20b:free", 
         "messages": [
             {"role": "user", "content": f"{system_prompt}\n\n{user_prompt}"}
         ]
