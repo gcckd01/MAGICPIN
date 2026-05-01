@@ -229,7 +229,7 @@ Merchant Data: {merchant_context_str}"""
     try:
         llm_json_output = await asyncio.wait_for(
             asyncio.to_thread(generate_llm_response, VERA_SYSTEM_PROMPT, user_prompt),
-            timeout=10.0
+            timeout=15.0
         )
         
         if "error" in llm_json_output or not llm_json_output.get("body") or len(str(llm_json_output.get("body", ""))) < 5:
