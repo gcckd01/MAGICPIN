@@ -48,20 +48,18 @@ def generate_llm_response(system_prompt: str, user_prompt: str) -> dict:
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://magicpin.com",
     }
     
-    body = {
-        # Change this line:
-        "model": "openai/gpt-oss-20b:free", 
+    data = {
+        "model": "openai/gpt-oss-120b:free", 
         "messages": [
             {"role": "user", "content": f"{system_prompt}\n\n{user_prompt}"}
         ]
     }
     
-
-    
-    req = urllib.request.Request(url, headers=headers, data=json.dumps(body).encode('utf-8'))
+    req = urllib.request.Request(url, headers=headers, data=json.dumps(data).encode('utf-8'))
     
     for attempt in range(2):
         try:
