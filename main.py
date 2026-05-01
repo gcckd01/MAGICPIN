@@ -19,7 +19,7 @@ DB_FILE = "vera_state.db"
 # 1. ENVIRONMENT & API SETUP
 # ==========================================
 load_dotenv()
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 VERA_SYSTEM_PROMPT = """Role: Vera, AI growth assistant for local merchants.
 Goal: Score 10/10 on Specificity, Category Fit, Merchant Fit, Trigger Relevance, and Engagement.
@@ -45,41 +45,46 @@ Return ONLY a valid JSON object matching this structure. Here is an example of a
 }"""
 
 def generate_llm_response(system_prompt: str, user_prompt: str) -> dict:
-    url = "https://openrouter.ai/api/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://magicpin.com",
-    }
+    if not GEMINI_API_KEY:
+        print("ERROR: GEMINI_API_KEY not found in environment")
+        return {"error": "missing_api_key"}
+        
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+    headers = {"Content-Type": "application/json"}
     
     data = {
-        "model": "openai/gpt-oss-120b:free", 
-        "messages": [
-            {"role": "user", "content": f"{system_prompt}\n\n{user_prompt}"}
-        ]
+        "systemInstruction": {"parts": [{"text": system_prompt}]},
+        "contents": [{"parts": [{"text": user_prompt}]}],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "temperature": 0.3
+        }
     }
     
     req = urllib.request.Request(url, headers=headers, data=json.dumps(data).encode('utf-8'))
     
     for attempt in range(2):
         try:
-            with urllib.request.urlopen(req, timeout=6.0) as response:
+            with urllib.request.urlopen(req, timeout=12.0) as response:
                 result = json.loads(response.read().decode('utf-8'))
-                llm_text = result['choices'][0]['message']['content']
+                llm_text = result['candidates'][0]['content']['parts'][0]['text']
+                # Clean up any potential markdown formatting
                 llm_text = llm_text.strip().removeprefix("```json").removesuffix("```").strip()
                 return json.loads(llm_text)
         except urllib.error.HTTPError as e:
             if e.code == 429 and attempt < 1:
                 time.sleep(1 + random.random() * 0.5)
                 continue
-            print(f"API HTTP Error {e.code}: {e.read().decode('utf-8')}")
-            return {"error": "timeout_or_fail"}
+            error_body = e.read().decode('utf-8', errors='ignore')
+            print(f"Gemini API Error {e.code}: {error_body}")
+            return {"error": "http_error"}
         except Exception as e:
+            print(f"Gemini API choked or timed out: {e}")
             if attempt < 1:
-                time.sleep(1 + random.random() * 0.5)
+                time.sleep(1)
                 continue
-            print(f"API choked or timed out: {e}")
             return {"error": "timeout_or_fail"}
+    return {"error": "max_retries_exceeded"}
 
 # ==========================================
 # 2. DATABASE INITIALIZATION
