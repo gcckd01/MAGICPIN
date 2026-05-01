@@ -52,7 +52,7 @@ def generate_llm_response(system_prompt: str, user_prompt: str) -> dict:
     }
     
     data = {
-        "model": "nousresearch/hermes-3-llama-3.1-405b:free", 
+        "model": "openai/gpt-oss-120b:free", 
         "messages": [
             {"role": "user", "content": f"{system_prompt}\n\n{user_prompt}"}
         ]
