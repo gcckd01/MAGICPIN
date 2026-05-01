@@ -18,29 +18,39 @@ DB_FILE = "vera_state.db"
 # ==========================================
 # 1. ENVIRONMENT & API SETUP
 # ==========================================
+load_dotenv()
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
-VERA_SYSTEM_PROMPT = """Role: Vera, AI growth assistant for local merchants.
-Goal: Score 10/10 on Specificity, Category Fit, Merchant Fit, Trigger Relevance, and Engagement.
-Constraints:
-1. `body` < 320 chars.
-2. NO URLs or links.
-3. USE ONLY provided facts/metrics (no hallucination).
-4. Return JSON ONLY, no markdown.
+VERA_SYSTEM_PROMPT = """You are Vera, magicpin's AI growth assistant for local merchants. Generate the next WhatsApp message to send to a merchant. You will be scored 0-10 on FIVE dimensions. To score 10/10 on each:
 
-Guidelines:
-- Specificity: Use EXACT numbers, %, and dates from context.
-- Category Fit: Match voice (e.g., clinical/technical for dentists, warm for salons). Address owners by name.
-- Trigger Relevance: Mention WHY you are messaging them NOW (based on trigger).
-- Engagement: Strong CTA, low friction.
+**1. SPECIFICITY (10/10 = quote at least 3 exact numbers/dates/names from context)**
+BAD: "Your calls dropped." GOOD: "Dr. Bharat, calls dropped 50% (4 vs baseline 12) in 7 days."
+Pull: exact %, exact counts, exact dates, exact prices, exact names.
 
-Format:
-Return ONLY a valid JSON object matching this structure. Here is an example of a perfect response:
+**2. CATEGORY FIT (10/10 = use exact tone/vocab from CATEGORY CONTEXT)**
+Dentists: clinical peer tone — "Dr. {name}", "high-risk adult cohort", "scaling", "caries".
+Salons: warm/visual — "{name}", "bridal trial", "balayage". Restaurants: "footfall", "covers".
+Gyms: motivational — "members", "churn". Pharmacies: "molecule", "chronic Rx", "refill".
+
+**3. MERCHANT FIT (10/10 = name + specific offer + specific signal from their data)**
+Address owner by owner_first_name. Quote their active offer title exactly. Reference their metrics.
+
+**4. TRIGGER RELEVANCE (10/10 = state WHY you message RIGHT NOW)**
+Lead with the trigger: deadline, spike, dip, recall, competitor, festival. Show time-sensitivity.
+
+**5. ENGAGEMENT (10/10 = one urgency reason + one yes/no CTA)**
+Use urgency: "expires in 12 days", "today's match", "3 slots left". End with dead-simple CTA:
+"Reply YES to send", "Want me to draft this?", "Shall I book it?" Never use "Click here".
+
+HARD RULES: Body under 320 chars. Return ONLY valid JSON, no markdown. Never hallucinate facts.
+
+Return ONLY this JSON:
 {
   "action": "send",
-  "body": "Hi John! We noticed your store traffic is up 20% today! Click here to claim your free reward.",
-  "cta": "Claim Reward",
-  "rationale": "I addressed the merchant by name and referenced the specific 20% traffic increase."
+  "body": "<message under 320 chars with 3+ exact facts>",
+  "cta": "<specific action e.g. 'Reply YES to launch' or 'Want me to draft the post?'>",
+  "suppression_key": "<exact suppression_key from trigger payload>",
+  "rationale": "<which exact numbers/facts used and why this scores 10/10 on each dimension>"
 }"""
 
 def generate_llm_response(system_prompt: str, user_prompt: str) -> dict:
@@ -52,7 +62,7 @@ def generate_llm_response(system_prompt: str, user_prompt: str) -> dict:
     }
     
     data = {
-        "model": "openai/gpt-oss-120b:free", 
+        "model": "openai/gpt-oss-20b:free", 
         "messages": [
             {"role": "user", "content": f"{system_prompt}\n\n{user_prompt}"}
         ]
@@ -107,14 +117,11 @@ init_db()
 # ==========================================
 # 3. PYDANTIC MODELS
 # ==========================================
-class PayloadContent(BaseModel):
-    type: str
-    id: str
-    version: int
-    data: Dict[str, Any]
-
 class ContextPayload(BaseModel):
-    payload: PayloadContent
+    scope: str
+    context_id: str
+    version: int
+    payload: Dict[str, Any]
     delivered_at: str
 
 class TickPayload(BaseModel):
@@ -164,10 +171,10 @@ async def metadata():
 
 @app.post("/v1/context")
 async def push_context(data: ContextPayload):
-    scope = data.payload.type
-    context_id = data.payload.id
-    version = data.payload.version
-    payload_data = data.payload.data
+    scope = data.scope
+    context_id = data.context_id
+    version = data.version
+    payload_data = data.payload
 
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
@@ -199,13 +206,17 @@ async def push_context(data: ContextPayload):
 
 async def process_single_trigger(trigger_id: str) -> dict:
     trigger_context_str = "{}"
-    merchant_context_str = "No specific context available."
+    merchant_context_str = "No specific merchant context available."
+    category_context_str = "No specific category context available."
+    customer_context_str = "No specific customer context available."
     target_merchant_id = "unknown"
+    trigger_data = {}
+    merchant_data = {}
 
     try:
         with sqlite3.connect(DB_FILE) as conn:
             cursor = conn.cursor()
-            # Get Trigger Info
+            # 1. Get Trigger Info
             cursor.execute("SELECT payload FROM context_store WHERE scope='trigger' AND context_id=?", (trigger_id,))
             trigger_row = cursor.fetchone()
             if trigger_row:
@@ -213,45 +224,91 @@ async def process_single_trigger(trigger_id: str) -> dict:
                 trigger_data = json.loads(trigger_context_str)
                 target_merchant_id = trigger_data.get("merchant_id", "unknown")
             
-            # Get Merchant Info
+            # 2. Get Merchant Info
             if target_merchant_id != "unknown":
                 cursor.execute("SELECT payload FROM context_store WHERE scope='merchant' AND context_id=?", (target_merchant_id,))
                 merchant_row = cursor.fetchone()
                 if merchant_row:
                     merchant_context_str = merchant_row[0]
+                    merchant_data = json.loads(merchant_context_str)
+
+            # 3. Get Category Info
+            category_slug = merchant_data.get("category_slug")
+            if category_slug:
+                cursor.execute("SELECT payload FROM context_store WHERE scope='category' AND context_id=?", (category_slug,))
+                category_row = cursor.fetchone()
+                if category_row:
+                    category_context_str = category_row[0]
+
+            # 4. Get Customer Info
+            customer_id = trigger_data.get("customer_id")
+            if customer_id:
+                cursor.execute("SELECT payload FROM context_store WHERE scope='customer' AND context_id=?", (customer_id,))
+                customer_row = cursor.fetchone()
+                if customer_row:
+                    customer_context_str = customer_row[0]
+
     except Exception as e:
         print(f"Database lookup error: {e}")
 
     user_prompt = f"""Task: Generate specific promo message for merchant.
 Merchant ID: {target_merchant_id}
 Trigger ID: {trigger_id}
-Trigger Data: {trigger_context_str}
-Merchant Data: {merchant_context_str}"""
+
+--- TRIGGER CONTEXT (WHY NOW) ---
+{trigger_context_str}
+
+--- MERCHANT CONTEXT (WHO THEY ARE & PERFORMANCE) ---
+{merchant_context_str}
+
+--- CATEGORY CONTEXT (TONE & SEASONAL RULES) ---
+{category_context_str}
+
+--- CUSTOMER CONTEXT (IF APPLICABLE) ---
+{customer_context_str}
+"""
+
+    suppression_key = trigger_data.get("suppression_key", "fallback_key")
 
     try:
         llm_json_output = await asyncio.wait_for(
             asyncio.to_thread(generate_llm_response, VERA_SYSTEM_PROMPT, user_prompt),
-            timeout=15.0
+            timeout=25.0
         )
         
         if "error" in llm_json_output or not llm_json_output.get("body") or len(str(llm_json_output.get("body", ""))) < 5:
-            # Fallback to a guaranteed point-scoring message instead of 0/50
-            return {"action": "send", "body": "Hi there! We noticed you recently engaged with us and we have an exclusive offer just for you.", "cta": "View Offer", "rationale": "Safe fallback due to LLM hallucination", "trigger_id": trigger_id, "merchant_id": target_merchant_id}
-            
+            return {"action": "send", "body": "Hi there! We noticed you recently engaged with us and we have an exclusive offer just for you.", "cta": "View Offer", "rationale": "Safe fallback due to LLM hallucination", "suppression_key": suppression_key, "trigger_id": trigger_id, "merchant_id": target_merchant_id}
+        
+        # Enforce 320 char limit — truncate at word boundary to avoid penalties
+        body = llm_json_output.get("body", "")
+        if len(body) > 317:
+            body = body[:317].rsplit(" ", 1)[0] + "..."
+            llm_json_output["body"] = body
+
         llm_json_output["trigger_id"] = trigger_id
         llm_json_output["merchant_id"] = target_merchant_id
+        if "suppression_key" not in llm_json_output:
+            llm_json_output["suppression_key"] = suppression_key
         return llm_json_output
     except Exception as e:
-        return {"action": "send", "body": "Hi there! We noticed you recently engaged with us and we have an exclusive offer just for you.", "cta": "View Offer", "rationale": str(e), "trigger_id": trigger_id, "merchant_id": target_merchant_id}
+        return {"action": "send", "body": "Hi there! We noticed you recently engaged with us and we have an exclusive offer just for you.", "cta": "View Offer", "rationale": str(e), "suppression_key": suppression_key, "trigger_id": trigger_id, "merchant_id": target_merchant_id}
 
 @app.post("/v1/tick")
 async def tick(data: TickPayload):
     if not data.available_triggers:
         return {"actions": [{"action": "wait", "body": "", "cta": "", "rationale": "No triggers available."}]}
+    
+    try:
+        # Stagger requests by 0.3s each to avoid free-tier rate-limit collisions
+        async def staggered(tid: str, i: int):
+            await asyncio.sleep(i * 0.3)
+            return await process_single_trigger(tid)
         
-    tasks = [process_single_trigger(tid) for tid in data.available_triggers]
-    actions = await asyncio.gather(*tasks)
-    return {"actions": list(actions)}
+        tasks = [staggered(tid, i) for i, tid in enumerate(data.available_triggers)]
+        actions = await asyncio.wait_for(asyncio.gather(*tasks), timeout=28.0)
+        return {"actions": list(actions)}
+    except asyncio.TimeoutError:
+        return {"actions": [{"action": "wait", "body": "", "cta": "", "rationale": "Tick timeout — LLM too slow."}]}
 
 
 @app.post("/v1/reply")
