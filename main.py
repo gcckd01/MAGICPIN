@@ -18,8 +18,7 @@ DB_FILE = "vera_state.db"
 # ==========================================
 # 1. ENVIRONMENT & API SETUP
 # ==========================================
-load_dotenv()
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 VERA_SYSTEM_PROMPT = """Role: Vera, AI growth assistant for local merchants.
 Goal: Score 10/10 on Specificity, Category Fit, Merchant Fit, Trigger Relevance, and Engagement.
@@ -45,43 +44,41 @@ Return ONLY a valid JSON object matching this structure. Here is an example of a
 }"""
 
 def generate_llm_response(system_prompt: str, user_prompt: str) -> dict:
-    if not GEMINI_API_KEY:
-        print("ERROR: GEMINI_API_KEY not found in environment")
-        return {"error": "missing_api_key"}
-        
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-    headers = {"Content-Type": "application/json"}
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://magicpin.com",
+    }
     
     data = {
-        "systemInstruction": {"parts": [{"text": system_prompt}]},
-        "contents": [{"parts": [{"text": user_prompt}]}],
-        "generationConfig": {
-            "responseMimeType": "application/json",
-            "temperature": 0.3
-        }
+        "model": "nousresearch/hermes-3-llama-3.1-405b:free", 
+        "messages": [
+            {"role": "user", "content": f"{system_prompt}\n\n{user_prompt}"}
+        ]
     }
     
     req = urllib.request.Request(url, headers=headers, data=json.dumps(data).encode('utf-8'))
     
-    for attempt in range(2):
+    for attempt in range(4):
         try:
             with urllib.request.urlopen(req, timeout=12.0) as response:
                 result = json.loads(response.read().decode('utf-8'))
-                llm_text = result['candidates'][0]['content']['parts'][0]['text']
-                # Clean up any potential markdown formatting
+                llm_text = result['choices'][0]['message']['content']
                 llm_text = llm_text.strip().removeprefix("```json").removesuffix("```").strip()
                 return json.loads(llm_text)
         except urllib.error.HTTPError as e:
-            if e.code == 429 and attempt < 1:
-                time.sleep(1 + random.random() * 0.5)
+            if e.code == 429:
+                print(f"OpenRouter Rate Limit (429) hit! Sleeping for 15s to bypass... (Attempt {attempt+1}/4)")
+                time.sleep(15)
                 continue
             error_body = e.read().decode('utf-8', errors='ignore')
-            print(f"Gemini API Error {e.code}: {error_body}")
+            print(f"OpenRouter API Error {e.code}: {error_body}")
             return {"error": "http_error"}
         except Exception as e:
-            print(f"Gemini API choked or timed out: {e}")
-            if attempt < 1:
-                time.sleep(1)
+            print(f"API choked or timed out: {e}")
+            if attempt < 2:
+                time.sleep(2)
                 continue
             return {"error": "timeout_or_fail"}
     return {"error": "max_retries_exceeded"}
